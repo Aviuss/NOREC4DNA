@@ -1,12 +1,9 @@
 import os
-import glob
 import math
 import bisect
 import struct
 import random
 import argparse
-import typing
-from zipfile import ZipFile
 # from pathos.multiprocessing import ProcessingPool as Pool
 # from pathos import multiprocessing
 # import dill
@@ -32,8 +29,6 @@ from norec4dna.distributions.ErlichZielinskiRobustSolitonDisribution import Erli
 
 DEFAULT_ID_LEN_FORMAT = "H"
 DEFAULT_NUMBER_OF_CHUNKS_LEN_FORMAT = "I"
-DEFAULT_SAVE_AS_FASTA = False
-DEFAULT_SAVE_AS_ZIP = False
 ONLINE_QUALITY = 7
 ONLINE_EPS = 0.068
 
@@ -128,34 +123,7 @@ def run(seq_seed=None, file='logo.jpg', repair_symbols=2, insert_header=False,
     return [ParallelPacket.from_packet(p) for p in tmp_list]
 
 
-def save_packets_zip(encodedPackets, out_file: typing.Optional[str] = None, file_ending=".zip", seed_is_filename=True):
-    if not out_file.endswith(file_ending):
-        out_file = out_file + "." + file_ending
-    i = 0
-    abs_dir = os.path.split(os.path.abspath("../" + out_file))[0]
-    if not os.path.exists(abs_dir):
-        os.makedirs(abs_dir)
-
-    with ZipFile(out_file, 'w') as f:
-        for packet in encodedPackets:
-            if seed_is_filename:
-                i = packet.id
-                f.writestr(f"{i}{file_ending}", packet.get_struct(True))
-            i += 1
-    print(f"Saved result at: %s" % out_file)
-
-
-def save_packets_fasta(packets, out_file, file_ending, clear_output=True, seed_is_filename=True):
-    if not out_file.endswith("/"):
-        files = glob.glob(out_file + "/*")
-    else:
-        files = glob.glob(out_file + "*")
-    if clear_output:
-        for f in files:
-            try:
-                os.remove(f)
-            except Exception as ex:
-                print("Error: ", ex)
+def save_packets_fasta(packets, out_file, file_ending, seed_is_filename=True):
     i = 0
     if not os.path.exists(out_file):
         os.makedirs(out_file)
@@ -169,30 +137,6 @@ def save_packets_fasta(packets, out_file, file_ending, clear_output=True, seed_i
             f.write(">" + e_prob + str(i) + file_ending + "\n" + packet.get_dna_struct(True) + "\n")
             i += 1
     print(f"Saved result at: %s" % out_str)
-
-
-def save_packets(packets, out_file, file_ending, clear_output=True, seed_is_filename=True):
-    if not out_file.endswith("/"):
-        files = glob.glob(out_file + "/*")
-    else:
-        files = glob.glob(out_file + "*")
-    if clear_output:
-        for f in files:
-            try:
-                os.remove(f)
-            except Exception as ex:
-                print("Error: ", ex)
-    i = 0
-    if not os.path.exists(out_file):
-        os.makedirs(out_file)
-    for packet in packets:  # sorted(packets, key=lambda elem: (elem.error_prob, elem.__hash__())):
-        if seed_is_filename:
-            i = packet.id
-        e_prob = (str(ceil(packet.error_prob * 100)) + "_") if packet.error_prob is not None else ""
-        with open(out_file + "/" + e_prob + str(i) + file_ending, "w") as f:
-            f.write(packet.get_dna_struct(True))
-        i += 1
-    print("Saved files in folder: %s" % out_file)
 
 
 def reduce_lists(base, input_list=None, l_size=100):
@@ -246,8 +190,8 @@ def update_progressbar():
 def main(filename="logo.jpg", repair_symbols=2, while_count=1000, out_size=1000, chunk_size=0, number_of_chunks=300,
          sequential=False, spare1core=False, prepend="", append="", insert_header=False,
          seed_len_format=DEFAULT_ID_LEN_FORMAT,
-         method='RU10', mode1bmp=False, drop_above=0.4, save_as_fasta=DEFAULT_SAVE_AS_FASTA,
-         packets_to_create=None, save_as_zip=DEFAULT_SAVE_AS_ZIP, xor_by_seed=False, id_spacing=0, custom_dist=None):
+         method='RU10', mode1bmp=False, drop_above=0.4,
+         packets_to_create=None, xor_by_seed=False, id_spacing=0, custom_dist=None):
     # global progress_bar, counter
     if packets_to_create is None:
         packets_to_create = math.pow(2, 8 * struct.calcsize(seed_len_format))
@@ -286,14 +230,9 @@ def main(filename="logo.jpg", repair_symbols=2, while_count=1000, out_size=1000,
     a = a[0]
     rt.stop()
 
-    out_file = "parallel_" + method
-    file_ending = "_joined." + method + "_DNA"
-    if save_as_fasta:
-        save_packets_fasta(a, out_file=out_file, file_ending=file_ending)
-    elif save_as_zip:
-        save_packets_zip(a, out_file=out_file, file_ending=file_ending)
-    else:
-        save_packets(a, out_file=out_file, file_ending=file_ending)
+    out_file = "output"
+    file_ending = "_joined" + ("_" + append if append else "") + "." + method + "_DNA"
+    save_packets_fasta(a, out_file=out_file, file_ending=file_ending)
     progress_bar.finish()
     return a, out_file, file_ending
 
@@ -372,10 +311,6 @@ if __name__ == "__main__":
                         help="Instantly drop packet if error-prob above set threshold")
     parser.add_argument("--seed_size_str", required=False, type=str, default=DEFAULT_ID_LEN_FORMAT,
                         help="struct-string for seed - possible values: I,H,B (see struct) This impacts the amount of generated packets on sequential mode")
-    parser.add_argument("--store_as_fasta", required=False, default=DEFAULT_SAVE_AS_FASTA,
-                        action="store_true", help="if set, store result as fasta file")
-    parser.add_argument("--store_as_zip", required=False, default=DEFAULT_SAVE_AS_ZIP,
-                        action="store_true", help="if set, store result as zip file")
     parser.add_argument("--xor_by_seed", required=False, default=False, action="store_true")
     parser.add_argument("--id_spacing", required=False, default=0, type=int)
     """
@@ -396,8 +331,6 @@ if __name__ == "__main__":
     _error_correction = args.error_correction
     _drop_above = args.drop_above
     _seed_size_str = args.seed_size_str
-    _store_as_fasta = args.store_as_fasta
-    _store_as_zip = args.store_as_zip
     _method = args.method
     _mode1bmp = args.mode1bmp
 
@@ -435,8 +368,7 @@ if __name__ == "__main__":
                 main(_input_file, _repair_symbols, _list_size, _out_size, _chunk_size, _number_of_hunks,
                      _sequential, _spare1core, method=_method, append=prepend_matching[_input_file],
                      insert_header=_insert_header, seed_len_format=_seed_size_str, drop_above=_drop_above,
-                     save_as_fasta=_store_as_fasta, save_as_zip=_store_as_zip, xor_by_seed=_xor_by_seed,
-                     id_spacing=_id_spacing)
+                     xor_by_seed=_xor_by_seed, id_spacing=_id_spacing)
 
                 # print(timeit.repeat(callab, number=1111, repeat=5))
             except Exception as ex:
@@ -455,4 +387,4 @@ if __name__ == "__main__":
         optimizer = init_optimization(par_packets, _error_correction, distribution)
         optimized_packets = optimizer.automated_optimization(_overhead, _overhead_factor, _error_prob_factor,
                                                              plot=_plot)
-        save_packets(optimized_packets, out_file=_out_file + "optimized/", file_ending=_file_ending)
+        save_packets_fasta(optimized_packets, out_file=_out_file + "optimized/", file_ending=_file_ending)
