@@ -1,4 +1,5 @@
 import os
+import json
 import math
 import bisect
 import struct
@@ -32,6 +33,32 @@ DEFAULT_NUMBER_OF_CHUNKS_LEN_FORMAT = "I"
 ONLINE_QUALITY = 7
 ONLINE_EPS = 0.068
 
+DEFAULT_CONFIG = {
+    "filename": None,  # the file to encode (required)
+    "repair_symbols": 2,  # number of repair symbols for ReedSolomon
+    "crc_size": 1,  # size of the crc in bytes: 1=CRC-8, 2=CRC-16, 4=CRC-32, 8=CRC-64
+    "list_size": 1000,  # size of operational list per thread [inferred by #cores if sequential is set to true]
+    "out_size": 1000,  # number of packets to save
+    "chunk_size": 0,  # chunk size (0 = infer from number of chunks)
+    "number_of_chunks": 300,  # number of chunks [ignored if chunk_size is set to value != 0]
+    "sequential": False,
+    "spare1core": False,
+    "split_input": 1,  # number of sub-codes to split input file into
+    "error_correction": "reedsolomon",  # nocode, crc or reedsolomon
+    "insert_header": False,
+    "method": "RU10",  # RU10, Online or LT
+    "optimization": False,
+    "overhead": 0.2,  # overhead to use for the optimization
+    "overhead_factor": 0.0,  # factor to exceed the overhead with if necessary to optimize
+    "error_prob_factor": 0.1,  # factor for the max error_prob for new packets based on the avg of the existing ones
+    "plot": False,  # plot the results of the optimization
+    "mode1bmp": False,  # input is an image, save as b/w bmp without header (applies to RU10 only)
+    "drop_above": 1.0,  # instantly drop packet if error-prob above set threshold
+    "seed_size_str": DEFAULT_ID_LEN_FORMAT,  # struct-string for seed: I,H,B (limits #packets in sequential mode)
+    "xor_by_seed": False,
+    "id_spacing": 0,
+}
+
 # DEFAULT_CHUNK_SIZE = 34
 # NUMBER_OF_PACKETS_TO_CREATE = 655360
 
@@ -41,10 +68,11 @@ progress_bar = None
 
 
 def run(seq_seed=None, file='logo.jpg', repair_symbols=2, insert_header=False,
-        error_correction=reed_solomon_encode, save_number_of_chunks_in_packet=False, l_size=1000, while_count=1000,
+        error_correction="reedsolomon", save_number_of_chunks_in_packet=False, l_size=1000, while_count=1000,
         chunk_size=0, number_of_chunks=300, prepend="", append="", seed_len_format=DEFAULT_ID_LEN_FORMAT,
         number_of_chunks_len_format=DEFAULT_NUMBER_OF_CHUNKS_LEN_FORMAT, method='RU10',
-        mode1bmp=False, drop_above=0.4, packets_to_create=None, xor_by_seed=False, id_spacing=0, custom_dist=None):
+        mode1bmp=False, drop_above=0.4, packets_to_create=None, xor_by_seed=False, id_spacing=0, custom_dist=None,
+        crc_size=1):
     # global counter
     if chunk_size != 0:
         number_of_chunks = Encoder.get_number_of_chunks_for_file_with_chunk_size(file, chunk_size)
@@ -52,34 +80,54 @@ def run(seq_seed=None, file='logo.jpg', repair_symbols=2, insert_header=False,
     if packets_to_create is None:
         packets_to_create = math.pow(2, 8 * struct.calcsize(seed_len_format))
     rules = dna_rules
-    if repair_symbols != 0:
-        dist, error_correction = get_err_dist(method, number_of_chunks, repair_symbols)
-    else:
-        dist = RaptorDistribution(number_of_chunks)
+    dist = get_dist(method, number_of_chunks)
+    error_correction = instantiate_error_correction(error_correction, repair_symbols, crc_size)
+    
     if custom_dist is not None:
         dist.f = custom_dist
         dist.d = [x for x in range(0, 41)]
+
     if method == 'RU10':
-        x = RU10Encoder(file, number_of_chunks, dist, chunk_size=chunk_size, insert_header=insert_header, rules=rules,
-                        error_correction=error_correction, id_len_format=seed_len_format,
-                        number_of_chunks_len_format=number_of_chunks_len_format,
-                        save_number_of_chunks_in_packet=save_number_of_chunks_in_packet, mode_1_bmp=mode1bmp,
-                        prepend=prepend, append=append, xor_by_seed=xor_by_seed, id_spacing=id_spacing)
+        x = RU10Encoder(
+            file, number_of_chunks, dist,
+            chunk_size=chunk_size,
+            insert_header=insert_header,
+            rules=rules,
+            error_correction=error_correction,
+            id_len_format=seed_len_format,
+            number_of_chunks_len_format=number_of_chunks_len_format,
+            save_number_of_chunks_in_packet=save_number_of_chunks_in_packet,
+            mode_1_bmp=mode1bmp,
+            prepend=prepend,
+            append=append,
+            xor_by_seed=xor_by_seed,
+            id_spacing=id_spacing
+        )
         x.prepare()
     elif method == 'LT':
-        x = LTEncoder(file, number_of_chunks, dist, chunk_size=chunk_size, insert_header=insert_header, rules=rules,
-                      error_correction=error_correction, number_of_chunks_len_format=number_of_chunks_len_format,
-                      id_len_format=seed_len_format, save_number_of_chunks_in_packet=save_number_of_chunks_in_packet)
+        x = LTEncoder(file, number_of_chunks, dist,
+            chunk_size=chunk_size,
+            insert_header=insert_header,
+            rules=rules,
+            error_correction=error_correction, number_of_chunks_len_format=number_of_chunks_len_format,
+            id_len_format=seed_len_format, save_number_of_chunks_in_packet=save_number_of_chunks_in_packet
+        )
         x.prepareEncoder()
     elif method == 'Online':
         number_of_chunks = dist.get_size()
-        x = OnlineEncoder(file, number_of_chunks, dist, ONLINE_EPS, ONLINE_QUALITY, error_correction=error_correction,
-                          quality_len_format="B", insert_header=False, check_block_number_len_format=seed_len_format,
-                          number_of_chunks_len_format=number_of_chunks_len_format, rules=rules,
-                          save_number_of_chunks_in_packet=False)
+        x = OnlineEncoder(file, number_of_chunks, dist, ONLINE_EPS, ONLINE_QUALITY,
+            error_correction=error_correction,
+            quality_len_format="B",
+            insert_header=False,
+            check_block_number_len_format=seed_len_format,
+            number_of_chunks_len_format=number_of_chunks_len_format,
+            rules=rules,
+            save_number_of_chunks_in_packet=False
+        )
         x.prepare()
     else:
         raise NotImplementedError("Choose: RU10, LT or Online")
+
     i = 0
     tmp_list = []
     while i < while_count:
@@ -89,8 +137,7 @@ def run(seq_seed=None, file='logo.jpg', repair_symbols=2, insert_header=False,
             packet = x.create_new_packet(seed=seq_seed + i)
         else:
             packet = x.create_new_packet()
-        # if i == 0:
-        #    print(f"%i , %s" % (len(packet.get_dna_struct(True)), packet.get_dna_struct(True)))
+
         _ = should_drop_packet(rules, packet)
         if packet.error_prob <= drop_above and (len(tmp_list) < l_size or packet.error_prob < tmp_list[-1].error_prob):
             if packet not in tmp_list:
@@ -114,9 +161,11 @@ def run(seq_seed=None, file='logo.jpg', repair_symbols=2, insert_header=False,
         #    counter.value += 1
     # save_packets_fasta(tmp_list, out_file=method + "_out_partial", file_ending="." + method + "_DNA",
     #                   clear_output=False)
+    
     conf = {'error_correction': error_correction, 'repair_symbols': repair_symbols,
             # 'number_of_splits': _number_of_splits,
             'find_minimum_mode': True, 'seq_seed': seq_seed}
+    
     # x.save_config_file(conf, section_name=method + "_" + file)
     if x.progress_bar is not None:
         x.progress_bar.finish()
@@ -191,7 +240,8 @@ def main(filename="logo.jpg", repair_symbols=2, while_count=1000, out_size=1000,
          sequential=False, spare1core=False, prepend="", append="", insert_header=False,
          seed_len_format=DEFAULT_ID_LEN_FORMAT,
          method='RU10', mode1bmp=False, drop_above=0.4,
-         packets_to_create=None, xor_by_seed=False, id_spacing=0, custom_dist=None):
+         packets_to_create=None, xor_by_seed=False, id_spacing=0, custom_dist=None, error_correction="reedsolomon",
+         crc_size=1):
     # global progress_bar, counter
     if packets_to_create is None:
         packets_to_create = math.pow(2, 8 * struct.calcsize(seed_len_format))
@@ -213,7 +263,8 @@ def main(filename="logo.jpg", repair_symbols=2, while_count=1000, out_size=1000,
         partial(run, file=filename, repair_symbols=repair_symbols, l_size=out_size, while_count=while_count,
                 chunk_size=chunk_size, number_of_chunks=number_of_chunks, prepend=prepend, append=append,
                 insert_header=insert_header, seed_len_format=_seed_size_str, method=method, mode1bmp=mode1bmp,
-                drop_above=drop_above, xor_by_seed=xor_by_seed, id_spacing=id_spacing, custom_dist=custom_dist), param)
+                drop_above=drop_above, xor_by_seed=xor_by_seed, id_spacing=id_spacing, custom_dist=custom_dist,
+                error_correction=error_correction, crc_size=crc_size), param)
     rt.stop()
     progress_bar.finish()
     print("Merging results...")
@@ -237,7 +288,7 @@ def main(filename="logo.jpg", repair_symbols=2, while_count=1000, out_size=1000,
     return a, out_file, file_ending
 
 
-def get_err_dist(_method, _number_of_chunks, _repair_symbols):
+def get_dist(_method, _number_of_chunks):
     if _method == 'RU10':
         dist = RaptorDistribution(_number_of_chunks)
     elif _method == 'LT':
@@ -246,103 +297,74 @@ def get_err_dist(_method, _number_of_chunks, _repair_symbols):
         dist = OnlineDistribution(ONLINE_EPS)
     else:
         raise NotImplementedError("Choose: RU10, LT or Online")
-    return dist, lambda x: reed_solomon_encode(x, _repair_symbols)
+    return dist
 
 
 def init_optimization(packets, error_correction, dist):
     return AutomatedFindMinimum(packets, error_correction=error_correction, dist=dist)
 
 
-def instantiate_error_correction(err_corr_name, no_repair_symbols):
+def instantiate_error_correction(err_corr_name, no_repair_symbols, crc_size):
     if err_corr_name == "nocode":
         return nocode
     elif err_corr_name == "crc":
-        return crc32
+        crc_len_format = {1: "B", 2: "H", 4: "L", 8: "Q"}[crc_size]
+        return lambda x: crc32(x, crc_len_format)
     elif err_corr_name == "reedsolomon":
-        if no_repair_symbols != 2:
-            return lambda x: reed_solomon_encode(x, no_repair_symbols)
-        else:
-            return reed_solomon_encode
-    elif err_corr_name == "dna_reedsolomon":
-        if no_repair_symbols != 2:
-            return lambda x: dna_reed_solomon_encode(x, no_repair_symbols)
-        else:
-            return dna_reed_solomon_encode
+        return lambda x: reed_solomon_encode(x, no_repair_symbols)
     else:
         raise RuntimeError(
-            "Selected Error Correction not supported, choose: 'nocode', 'crc', 'reedsolomon' or 'dna_reedsolomon")
+            "Selected Error Correction not supported, choose: 'nocode', 'crc', 'reedsolomon'")
+
+
+def load_config(config_path):
+    with open(config_path) as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        raise ValueError("Config file must contain a json object")
+    unknown_keys = set(config) - set(DEFAULT_CONFIG)
+    if unknown_keys:
+        raise ValueError("Unknown config parameter(s): " + ", ".join(sorted(unknown_keys)))
+    config = {**DEFAULT_CONFIG, **config}
+    if config["filename"] is None:
+        raise ValueError("Config parameter 'filename' (the file to encode) is required")
+    if config["error_correction"] not in ("nocode", "crc", "reedsolomon"):
+        raise ValueError("Config parameter 'error_correction' must be one of: nocode, crc, reedsolomon")
+    if config["crc_size"] not in (1, 2, 4, 8):
+        raise ValueError("Config parameter 'crc_size' must be one of: 1, 2, 4, 8")
+    return config
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("filename", metavar="file", type=str, help="the file to Encode")
-    parser.add_argument("--repair_symbols", metavar="repair_symbols", required=False, type=int, default=2,
-                        help="number of repair symbols for ReedSolomon (default=2)")
-    parser.add_argument("--list_size", metavar="list_size", required=False, type=int, default=1000,
-                        help="size of operational list per thread [inferred by #cores if sequential is set to true]")
-    parser.add_argument("--out_size", metavar="out_size", required=False, type=int, default=1000,
-                        help="number of packets to save")
-    parser.add_argument("--chunk_size", metavar="chunk_size", required=False, type=int, default=0,
-                        help="chunk size (default=0 [infer from number of chunks])")
-    parser.add_argument("--number_of_chunks", metavar="number_of_chunks", required=False, type=int, default=300,
-                        help="number of chunks (default=300) [ignored if chunk_size is set to value != 0]")
-    parser.add_argument("--sequential", required=False, default=False, action="store_true")
-    parser.add_argument("--spare1core", required=False, default=False, action="store_true")
-    parser.add_argument("--split_input", metavar="split_input", required=False, type=int, default=1,
-                        help="number of sub-codes to split input file into")
-    parser.add_argument("--error_correction", metavar="error_correction", required=False, type=str, default="nocode",
-                        help="Error Correction Method to use; possible values: \
-                        nocode, crc, reedsolomon, dna_reedsolomon (default=nocode)")
-    parser.add_argument("--insert_header", required=False, default=False, action="store_true")
-    parser.add_argument("--method", required=False, type=str, default="RU10",
-                        help="RU10, Online or LT are supported")
-    parser.add_argument("--optimization", required=False, default=False, action="store_true")
-    parser.add_argument("--overhead", required=False, type=float, default=0.2,
-                        help="overhead to use for the optimization")
-    parser.add_argument("--overhead_factor", required=False, type=float, default=0.0,
-                        help="factor to exceed the overhead with if necessary to optimize")
-    parser.add_argument("--error_prob_factor", required=False, type=float, default=0.1,
-                        help="factor for the max error_prob for new packets based on the avg of the existing ones")
-    parser.add_argument("--plot", required=False, default=False, action="store_true",
-                        help="plot the results of the optimization")
-    parser.add_argument("--mode1bmp", required=False, default=False, action="store_true",
-                        help="input is an image, save as b/w bmp without header (applies to RU10 only")
-    parser.add_argument("--drop_above", required=False, type=float, default=1.0,
-                        help="Instantly drop packet if error-prob above set threshold")
-    parser.add_argument("--seed_size_str", required=False, type=str, default=DEFAULT_ID_LEN_FORMAT,
-                        help="struct-string for seed - possible values: I,H,B (see struct) This impacts the amount of generated packets on sequential mode")
-    parser.add_argument("--xor_by_seed", required=False, default=False, action="store_true")
-    parser.add_argument("--id_spacing", required=False, default=0, type=int)
-    """
-    parser.add_argument("--savenumberofchunks", metavar="savenumberofchunks", required=False, type=bool,
-                        default=False)
-    """
-    args = parser.parse_args()
-    _input_file = args.filename
-    _repair_symbols = args.repair_symbols
-    _list_size = args.list_size
-    _out_size = args.out_size
-    _chunk_size = args.chunk_size
-    _number_of_hunks = args.number_of_chunks
-    _sequential = args.sequential
-    _spare1core = args.spare1core
-    _number_of_splits = args.split_input
-    _insert_header = args.insert_header
-    _error_correction = args.error_correction
-    _drop_above = args.drop_above
-    _seed_size_str = args.seed_size_str
-    _method = args.method
-    _mode1bmp = args.mode1bmp
+    parser.add_argument("config", metavar="config", type=str,
+                        help="path to a json file with the parameters (see DEFAULT_CONFIG for keys and defaults)")
+                        
+    config = load_config(parser.parse_args().config)
+    _input_file = config["filename"]
+    _repair_symbols = config["repair_symbols"]
+    _list_size = config["list_size"]
+    _out_size = config["out_size"]
+    _chunk_size = config["chunk_size"]
+    _number_of_hunks = config["number_of_chunks"]
+    _sequential = config["sequential"]
+    _spare1core = config["spare1core"]
+    _number_of_splits = config["split_input"]
+    _insert_header = config["insert_header"]
+    _error_correction = config["error_correction"]
+    _drop_above = config["drop_above"]
+    _seed_size_str = config["seed_size_str"]
+    _method = config["method"]
+    _mode1bmp = config["mode1bmp"]
 
-    _optimization = args.optimization
-    _overhead = args.overhead
-    _overhead_factor = args.overhead_factor
-    _error_prob_factor = args.error_prob_factor
-    _plot = args.plot
-    _xor_by_seed = args.xor_by_seed
-    _id_spacing = args.id_spacing
-
-    _error_correction = instantiate_error_correction(_error_correction, _repair_symbols)
+    _optimization = config["optimization"]
+    _overhead = config["overhead"]
+    _overhead_factor = config["overhead_factor"]
+    _error_prob_factor = config["error_prob_factor"]
+    _plot = config["plot"]
+    _xor_by_seed = config["xor_by_seed"]
+    _id_spacing = config["id_spacing"]
+    _crc_size = config["crc_size"]
 
     if _chunk_size != 0:
         _number_of_hunks = Encoder.get_number_of_chunks_for_file_with_chunk_size(_input_file, _chunk_size)
@@ -368,7 +390,8 @@ if __name__ == "__main__":
                 main(_input_file, _repair_symbols, _list_size, _out_size, _chunk_size, _number_of_hunks,
                      _sequential, _spare1core, method=_method, append=prepend_matching[_input_file],
                      insert_header=_insert_header, seed_len_format=_seed_size_str, drop_above=_drop_above,
-                     xor_by_seed=_xor_by_seed, id_spacing=_id_spacing)
+                     xor_by_seed=_xor_by_seed, id_spacing=_id_spacing, error_correction=_error_correction,
+                     crc_size=_crc_size)
 
                 # print(timeit.repeat(callab, number=1111, repeat=5))
             except Exception as ex:
@@ -382,9 +405,12 @@ if __name__ == "__main__":
     else:
         par_packets, _out_file, _file_ending = main(_input_file, _repair_symbols, _list_size, _out_size, _chunk_size,
                                                     _number_of_hunks, _sequential, _spare1core, method=_method,
-                                                    seed_len_format=_seed_size_str, drop_above=_drop_above)
-        distribution, _error_correction = get_err_dist(_method, _number_of_hunks, _repair_symbols)
-        optimizer = init_optimization(par_packets, _error_correction, distribution)
+                                                    seed_len_format=_seed_size_str, drop_above=_drop_above,
+                                                    error_correction=_error_correction, crc_size=_crc_size)
+        distribution = get_dist(_method, _number_of_hunks)
+        optimizer = init_optimization(par_packets,
+                                      instantiate_error_correction(_error_correction, _repair_symbols, _crc_size),
+                                      distribution)
         optimized_packets = optimizer.automated_optimization(_overhead, _overhead_factor, _error_prob_factor,
                                                              plot=_plot)
         save_packets_fasta(optimized_packets, out_file=_out_file + "optimized/", file_ending=_file_ending)

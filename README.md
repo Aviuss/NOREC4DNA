@@ -1,78 +1,47 @@
-# NOREC4DNA
+# Fork
 
-NOREC4DNA is an all-in-one Suite for analyzing, testing and converting Data into DNA-Chunks to use for a
-DNA-Storage-System using integrated DNA-Rules as well as the MOSLA DNA-Simulation-API.
+this is a fork
 
-NOREC4DNA implements LT, Online, and Raptor (RU10) Fountain Codes.
+# Encoding in LT
 
-## Overview:
+```
+sudo docker run --rm -v "$PWD":/data:Z -v "$PWD/output":/norec4dna/output:Z norec4dna /data/find_minimum_config.json
+```
 
-- [Install](#Install)
-    * [Docker](#Using-docker)
-    * [Source](#From-source)
-- [Usage](#Usage)
-    * [Docker](#Docker)
-- [Tools](#Tools)
-- [Example](#Example)
-
----
-
-## Install
-
-### Using docker
-
-+ Building the docker container from source:
-    - ````git clone git@github.com:umr-ds/NOREC4DNA.git````
-    - ```docker build . --tag norec4dna```
-+ pulling the container from Dockerhub:
-    - TBA once NOREC4DNA is available on Dockerhub
-    
-### From source
-
-+ Clone the repository:
-    - ````git clone git@github.com:umr-ds/NOREC4DNA.git````
+```
+docker run --rm \
+-v ./[input_folder]:/data \
+norec4dna [file to encode] \
+--method LT \
+```
 
 
-+ OPTIONAL create a virtual environment (recommended):
-    - ````python3 -m venv <name_of_virtualenv>````
-    - activate/source the newly created venv
+
+# Other
+
+`docker build . --tag norec4dna`
+
+packet bytes = seed bytes + chunk_size + repair_symbols
+sequence (nt) = 4 × packet bytes (1 byte = 4 bases)
 
 
-+ Installing the dependencies:
-    - depending on your distro you might need to manually install `LLVM` as well as `gcc` and `build-essential`
-    - ```pip3 install -r requirements.txt```
-    - if a packages fails to install, it might be required to install the python3-dev packages using apt
+
+```
+docker run --rm \
+-v "$PWD":/data:Z \
+norec4dna README.md \
+--method RU10 --chunk_size 40 --insert_header   --repair_symbols 2 --seed_size_str I --list_size 2000 --out_size 100
+```
 
 
-+ Install NOREC4DNA:
-    - ```python3 setup.py install```
-  
-**If you plan to build NOREC4DNA from source under Windows we recommend using Anaconda!**
 
----
-
-## Usage
-
-### Docker
-To get the en- and decoded files from NOREC4DNA using docker you might need to map a volume into the container.
-
-Alternatively you could use the `docker cp` command to transfer the desired files.
-
+# fragments of old NOREC4DNA docs
 
 ## Find minimum
 
-### Building and running
+### Building
 
-Build the docker container:
-
-`docker build --tag norec4dna_gd`
-
-Run:
-
-`docker run --name norec4dna_gd_multiple_files -d -t -v /tmp/norec4dna/:/norec4dna/tmp norec4dna_gd (Parameter...)`
-
-Alternatively you can run the script directly:
-`python3 find_minimum_packets.py <Parameters>`
+Build the docker container
 
 ### Parameters
 
@@ -98,10 +67,6 @@ Number of packets to save after combining the lists and sorting them by the pack
 `--chunk_size=[size]`
 
 Size of chunks to split the file into, inferred from number of chunks and the filesize if not set (default=0).
-
-`--number_of_chunks=[no_chunks]`
-
-Number of chunks to split the file into, ignored if chunksize is set to value != 0 (default=300).
 
 `--sequential`
 
