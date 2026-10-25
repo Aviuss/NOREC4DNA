@@ -37,12 +37,12 @@ DEFAULT_CONFIG = {
     "filename": None,  # the file to encode (required)
     "repair_symbols": 2,  # number of repair symbols for ReedSolomon
     "crc_size": 1,  # size of the crc in bytes: 1=CRC-8, 2=CRC-16, 4=CRC-32, 8=CRC-64
-    "list_size": 1000,  # size of operational list per thread [inferred by #cores if sequential is set to true]
+    "list_size": 1000,  # total number of packets to generate, split across cores [ignored if sequential is set to true]
     "out_size": 1000,  # number of packets to save
     "chunk_size": 0,  # chunk size (0 = infer from number of chunks)
     "number_of_chunks": 300,  # number of chunks [ignored if chunk_size is set to value != 0]
     "sequential": False,
-    "spare1core": False,
+    "cores": None,  # number of worker processes (None = all cpu cores)
     "split_input": 1,  # number of sub-codes to split input file into
     "error_correction": "reedsolomon",  # nocode, crc or reedsolomon
     "insert_header": False,
@@ -171,6 +171,8 @@ def run(seq_seed=None, file='logo.jpg', repair_symbols=2, insert_header=False,
         x.progress_bar.finish()
     return [ParallelPacket.from_packet(p) for p in tmp_list]
 
+def run_worker(seq_seed, while_count, **kwargs):
+    return run(seq_seed=seq_seed, while_count=while_count, **kwargs)
 
 def save_packets_fasta(packets, out_file, file_ending, seed_is_filename=True):
     i = 0
@@ -237,30 +239,29 @@ def update_progressbar():
 
 # multiprocess and merge all created lists at the end
 def main(filename="logo.jpg", repair_symbols=2, while_count=1000, out_size=1000, chunk_size=0, number_of_chunks=300,
-         sequential=False, spare1core=False, prepend="", append="", insert_header=False,
+         sequential=False, prepend="", append="", insert_header=False,
          seed_len_format=DEFAULT_ID_LEN_FORMAT,
          method='RU10', mode1bmp=False, drop_above=0.4,
          packets_to_create=None, xor_by_seed=False, id_spacing=0, custom_dist=None, error_correction="reedsolomon",
-         crc_size=1):
+         crc_size=1, cores=None):
     # global progress_bar, counter
     if packets_to_create is None:
         packets_to_create = math.pow(2, 8 * struct.calcsize(seed_len_format))
-    cores = multiprocessing.cpu_count()
-    if spare1core:
-        cores = cores - 1
+    if cores is None:
+        cores = multiprocessing.cpu_count()
     # counter = multiprocessing.Value('i', 0)
     p = multiprocessing.Pool(cores)  # , initializer=init_mp, initargs=(counter,))
-    param = [None] * cores
     if sequential:
         stepsize = packets_to_create / cores
-        param = [int(floor(i * stepsize)) for i in range(cores)]
-        while_count = int(ceil(stepsize)) + 1
+        param = [(int(floor(i * stepsize)), int(ceil(stepsize)) + 1) for i in range(cores)]
+    else:
+        param = [(None, while_count // cores + (1 if i < while_count % cores else 0)) for i in range(cores)]
 
     progress_bar = create_progress_bar(packets_to_create)
     progress_bar.update(0)
     rt = RepeatedTimer(2, update_progressbar, )
-    a = p.map(
-        partial(run, file=filename, repair_symbols=repair_symbols, l_size=out_size, while_count=while_count,
+    a = p.starmap(
+        partial(run_worker, file=filename, repair_symbols=repair_symbols, l_size=out_size,
                 chunk_size=chunk_size, number_of_chunks=number_of_chunks, prepend=prepend, append=append,
                 insert_header=insert_header, seed_len_format=_seed_size_str, method=method, mode1bmp=mode1bmp,
                 drop_above=drop_above, xor_by_seed=xor_by_seed, id_spacing=id_spacing, custom_dist=custom_dist,
@@ -332,6 +333,9 @@ def load_config(config_path):
         raise ValueError("Config parameter 'error_correction' must be one of: nocode, crc, reedsolomon")
     if config["crc_size"] not in (1, 2, 4, 8):
         raise ValueError("Config parameter 'crc_size' must be one of: 1, 2, 4, 8")
+    if config["cores"] is not None and (not isinstance(config["cores"], int) or isinstance(config["cores"], bool)
+                                        or config["cores"] < 1):
+        raise ValueError("Config parameter 'cores' must be a positive integer or null")
     return config
 
 
@@ -348,7 +352,7 @@ if __name__ == "__main__":
     _chunk_size = config["chunk_size"]
     _number_of_hunks = config["number_of_chunks"]
     _sequential = config["sequential"]
-    _spare1core = config["spare1core"]
+    _cores = config["cores"]
     _number_of_splits = config["split_input"]
     _insert_header = config["insert_header"]
     _error_correction = config["error_correction"]
@@ -388,10 +392,10 @@ if __name__ == "__main__":
                 print("File to encode: " + str(_input_file))
                 # def callab():
                 main(_input_file, _repair_symbols, _list_size, _out_size, _chunk_size, _number_of_hunks,
-                     _sequential, _spare1core, method=_method, append=prepend_matching[_input_file],
+                     _sequential, method=_method, append=prepend_matching[_input_file],
                      insert_header=_insert_header, seed_len_format=_seed_size_str, drop_above=_drop_above,
                      xor_by_seed=_xor_by_seed, id_spacing=_id_spacing, error_correction=_error_correction,
-                     crc_size=_crc_size)
+                     crc_size=_crc_size, cores=_cores)
 
                 # print(timeit.repeat(callab, number=1111, repeat=5))
             except Exception as ex:
@@ -404,9 +408,10 @@ if __name__ == "__main__":
         #                         clear_dest_folder=True)
     else:
         par_packets, _out_file, _file_ending = main(_input_file, _repair_symbols, _list_size, _out_size, _chunk_size,
-                                                    _number_of_hunks, _sequential, _spare1core, method=_method,
+                                                    _number_of_hunks, _sequential, method=_method,
                                                     seed_len_format=_seed_size_str, drop_above=_drop_above,
-                                                    error_correction=_error_correction, crc_size=_crc_size)
+                                                    error_correction=_error_correction, crc_size=_crc_size,
+                                                    cores=_cores)
         distribution = get_dist(_method, _number_of_hunks)
         optimizer = init_optimization(par_packets,
                                       instantiate_error_correction(_error_correction, _repair_symbols, _crc_size),

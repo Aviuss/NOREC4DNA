@@ -7,7 +7,7 @@
   "chunk_size": 0,
   "number_of_chunks": 300,
   "sequential": false,
-  "spare1core": false,
+  "cores": null,
   "split_input": 1,
   "error_correction": "reedsolomon",
   "insert_header": false,
